@@ -29,6 +29,10 @@ impl<C: Read> MyBufReader<C> {
         }
     }
 
+    fn get_mut(&mut self) -> &mut C {
+        &mut self.inner
+    }
+
     fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
         buf.copy_from_slice(&self.buf[..self.filled]);
         self.filled = 0;
@@ -64,44 +68,53 @@ impl<C: Read> MyBufReader<C> {
 
 #[cfg(test)]
 mod tests {
+    // before running benches run 'docker run --rm -p 12345:11211 --name my-memcache -d memcached'
     extern crate test;
-    use test::{black_box, Bencher};
     use super::MyBufReader;
-    use std::io::{BufRead, BufReader};
-    use std::fs::File;
+    use std::{
+        io::{Write, BufRead, BufReader},
+        net::TcpStream,
+    };
+    use test::{black_box, Bencher};
 
     #[bench]
     fn bench_reader(b: &mut Bencher) {
-        
+        let stream = TcpStream::connect("127.0.0.1:12345").expect("failed to connect");
+        let mut reader = MyBufReader::with_capacity(2 * 1024, stream);
+        reader.get_mut().write_all(b"set gpl 00 10000 5 noreply\r\nvalue\r\n").expect("failed to set key");
+
         // Optionally include some setup
         b.iter(|| {
-            let file = File::open("lines.txt").expect("file not found");
-            let mut reader = MyBufReader::with_capacity(2*1024, file);        
             // Inner closure, the actual test
             for _ in 0..100 {
+                reader
+                    .get_mut()
+                    .write_all(b"get gpl\r\n")
+                    .expect("failed to write");
                 let line = reader.read_line().expect("reading line failed");
-                black_box(line);
-                // println!("got line: {}, len: {}", unsafe { std::str::from_utf8_unchecked(&line[..line.len() - 2]) }, line.len());
                 let len = line.len();
                 reader.consume(len);
             }
         });
     }
 
-//    #[bench]
-//    fn bench_reader2(b: &mut Bencher) {
-//        // Optionally include some setup
-//        b.iter(|| {
-//            let file = File::open("lines.txt").expect("file not found");
-//            let mut bufreader = BufReader::new(file);
-//            // Inner closure, the actual test
-//            for _ in 0..100 {
-//                let mut string = String::new();
-//                bufreader.read_line(&mut string).expect("reading line failed");
-//                black_box(string);
-//                // println!("got line: {}, len: {}", unsafe { std::str::from_utf8_unchecked(&line[..line.len() - 2]) }, line.len());
-//            }
-//        });
-//    }
-
+    #[bench]
+    fn bench_reader2(b: &mut Bencher) {
+        let stream = TcpStream::connect("127.0.0.1:12345").expect("failed to connect");
+        let mut reader = BufReader::with_capacity(2 * 1024, stream);
+        reader.get_mut().write_all(b"set gnu 00 10000 5 noreply\r\nvalue\r\n").expect("failed to set key");
+        // Optionally include some setup
+        b.iter(|| {
+            // Inner closure, the actual test
+            for _ in 0..100 {
+                reader
+                    .get_mut()
+                    .write_all(b"get gnu\r\n")
+                    .expect("failed to write");
+                let mut string = String::new();
+                reader.read_line(&mut string).expect("reading line failed");
+                black_box(string);
+            }
+        });
+    }
 }
