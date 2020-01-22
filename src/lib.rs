@@ -1,6 +1,5 @@
 #![feature(test)]
 use std::io::Read;
-
 struct MyBufReader<C> {
     inner: C,
     filled: usize,
@@ -19,9 +18,8 @@ fn get_line(buf: &[u8]) -> Option<usize> {
 }
 
 impl<C: Read> MyBufReader<C> {
-    pub fn with_capacity(capacity: usize, inner: C) -> Self {
-        let mut buf = Vec::with_capacity(capacity);
-        unsafe { buf.set_len(capacity) };
+    fn with_capacity(capacity: usize, inner: C) -> Self {
+        let buf = vec![0x0; capacity];
         Self {
             inner,
             filled: 0,
@@ -29,32 +27,44 @@ impl<C: Read> MyBufReader<C> {
         }
     }
 
-    fn get_mut(&mut self) -> &mut C {
+    pub(crate) fn get_mut(&mut self) -> &mut C {
         &mut self.inner
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
-        buf.copy_from_slice(&self.buf[..self.filled]);
-        self.filled = 0;
-        self.inner.read_exact(&mut buf[self.filled..])
+        let min = std::cmp::min(buf.len(), self.filled);
+        let (to_fill, rest) = buf.split_at_mut(min);
+        to_fill.copy_from_slice(&self.buf[..min]);
+        self.consume(min);
+        if rest.len() != 0 {
+            self.inner.read_exact(&mut rest[..])?;
+        }
+        Ok(())
     }
 
-    fn read_line(&mut self) -> std::io::Result<&[u8]> {
+    /// Try to read a CRLF terminated line from the underlying reader.
+    /// The length of the line is expected to be <= the length of the
+    /// internal buffer, suited for reading headers or short responses.
+    ///
+    /// After reading a line, `consume` should be called.
+    fn read_line(&mut self) -> std::io::Result<&str> {
         // check if the buf already has a new line
         if let Some(n) = get_line(&self.buf[..self.filled]) {
-            return Ok(&self.buf[..n]);
+            return Ok(std::str::from_utf8(&self.buf[..n]).unwrap());
         }
         loop {
             let (filled, buf) = self.buf.split_at_mut(self.filled);
+            if buf.len() == 0 {
+                panic!("Ascii protocol response too long");
+            }
             let filled = filled.len();
             let read = self.inner.read(&mut buf[..])?;
             if read == 0 {
-                // TODO: change to error
-                panic!("{:?} {:?} line too long", filled, buf.len());
+                panic!("Ascii protocol no line found");
             }
             self.filled += read;
             if let Some(n) = get_line(&buf[..read]) {
-                return Ok(&self.buf[..filled + n]);
+                return Ok(std::str::from_utf8(&self.buf[..filled + n]).unwrap());
             }
         }
     }
